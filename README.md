@@ -23,7 +23,6 @@ A comprehensive Natural Language Processing (NLP) toolkit with an interactive we
 1. **Clone the repository:**
    ```bash
    git clone <https://github.com/aagaman09/llm-7th-sem.git>
-   cd llm
    ```
 
 
