@@ -63,6 +63,51 @@ with tab1:
 # --- TAB 2: Stem vs Lemma Comparison ---
 with tab2:
     st.subheader("Compare Stemming vs Lemmatization")
+    
+    # Add explanations about stemming and lemmatization
+    with st.expander("About Stemming and Lemmatization", expanded=True):
+        col1, col2 = st.columns(2)
+        
+        with col1:
+            st.markdown("### Stemming")
+            st.markdown("""
+            Stemming is a rule-based process of removing the inflected ending from a word, reducing it to its root form (stem).
+            
+            **Characteristics:**
+            - ✅ Computationally less intensive and faster
+            - ✅ Simpler implementation
+            - ❌ Often produces non-dictionary words
+            - ❌ Less context-aware
+            
+            **Example:**
+            - "running" → "run"
+            - "studies" → "studi"
+            - "historical" → "histor"
+            """)
+        
+        with col2:
+            st.markdown("### Lemmatization")
+            st.markdown("""
+            Lemmatization involves determining the lemma (dictionary form) of a word through vocabulary and morphological analysis.
+            
+            **Characteristics:**
+            - ✅ Produces actual dictionary words
+            - ✅ More context-aware and linguistically informed
+            - ❌ Computationally more intensive
+            - ❌ More complex implementation
+            
+            **Example:**
+            - "running" → "run"
+            - "studies" → "study"
+            - "historical" → "historical"
+            """)
+            
+        st.markdown("""
+        ### When to use which?
+        - **Use Stemming** when computational efficiency is important and you don't mind some linguistic inaccuracies.
+        - **Use Lemmatization** when you need linguistically correct transformations and dictionary words.
+        """)
+    
     default_input = "running, flies, studies, better, cats, playing, talked, studies, swimming, worse"
     example_words = st.text_input("Enter comma-separated words:", default_input)
 
@@ -72,7 +117,29 @@ with tab2:
 
         if res.status_code == 200:
             comp_df = pd.DataFrame(res.json())
+            
+            # Add descriptions of the comparison results
+            st.subheader("Comparison Results")
+            st.markdown("""
+            The table below shows the differences between stemming and lemmatization for each word:
+            - **Word**: Original input word
+            - **Stem**: Result of Porter stemming algorithm
+            - **Lemma**: Result of lemmatization using SpaCy
+            """)
+            
             st.dataframe(comp_df, use_container_width=True, height=400)
+            
+            # Check for interesting differences to highlight
+            differences = []
+            for i, row in comp_df.iterrows():
+                if row['stem'] != row['lemma'] and row['lemma'] != row['word']:
+                    differences.append(f"**{row['word']}**: Stem is '{row['stem']}' but lemma is '{row['lemma']}'")
+            
+            if differences:
+                st.subheader("Notable Differences")
+                st.markdown("These examples highlight how stemming and lemmatization can produce different results:")
+                for diff in differences[:5]:  # Limit to first 5 differences
+                    st.markdown(f"- {diff}")
         else:
             st.error("❌ API request failed.")
 
