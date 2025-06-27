@@ -1,0 +1,25 @@
+start_urls:
+  - https://evostore.com.np/iPhone
+
+rules:
+  - follow_links:
+      css_selector: "a.product-link"
+
+  - extract_fields:
+      product_name:
+        css: "h1.product_title"
+      price:
+        css: ".product-price"
+      description:
+        css: ".product-description"
+      images:
+        css: ".product-images img"
+        attribute: "src"
+      availability:
+        css: ".availability"
+
+  - filter:
+      any_field_contains:
+        - "iphone"
+        - "ipad"
+        - "macbook"
