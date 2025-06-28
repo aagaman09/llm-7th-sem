@@ -1,0 +1,13 @@
+# Requirements for Formula 1 Prompting Experiment
+# No external dependencies required - uses only Python standard library
+
+# If you want to extend this with actual LLM API calls, consider:
+# openai>=1.0.0
+# anthropic>=0.3.0 
+# transformers>=4.20.0
+# requests>=2.28.0
+
+# For data analysis extensions:
+# pandas>=1.5.0
+# numpy>=1.24.0
+# matplotlib>=3.6.0
