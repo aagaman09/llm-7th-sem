@@ -45,7 +45,7 @@ assignment5/
 ├── BLIP.ipynb             # Jupyter notebook for experimentation
 ├── requirements.txt        # Python dependencies
 └── README.md              # Project documentation
-
+```
 
 ## 🚀 Usage
 
