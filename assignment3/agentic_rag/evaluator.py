@@ -5,8 +5,8 @@ from pydantic import BaseModel, Field
 import json
 from loguru import logger
 
-# Initialize Ollama LLM for evaluation
-evaluator_llm = ChatOllama(model="llama3", temperature=0)
+# Initialize Ollama LLM for evaluation with a larger, more capable model
+evaluator_llm = ChatOllama(model="llama3.2:1b", temperature=0)
 
 # Grade schemas for structured output
 class CorrectnessGrade(BaseModel):
@@ -33,71 +33,55 @@ class RetrievalRelevanceGrade(BaseModel):
     score: int = Field(description="Relevance score from 1-5", ge=1, le=5)
 
 # Evaluation prompts
-CORRECTNESS_INSTRUCTIONS = """You are a teacher grading a quiz. You will be given a QUESTION, the GROUND TRUTH (correct) ANSWER, and the STUDENT ANSWER.
+CORRECTNESS_INSTRUCTIONS = """You are evaluating if a student's answer is factually correct compared to the ground truth.
 
-Grade criteria:
-(1) Grade the student answers based ONLY on their factual accuracy relative to the ground truth answer.
-(2) Ensure that the student answer does not contain any conflicting statements.
-(3) It is OK if the student answer contains more information than the ground truth answer, as long as it is factually accurate.
+Compare the student answer to the ground truth answer:
+- Correct (true): The student answer is factually accurate and aligns with the ground truth
+- Incorrect (false): The student answer contains factual errors or contradicts the ground truth
 
-Correctness:
-- True: The student's answer meets all criteria and is factually accurate
-- False: The student's answer contains factual errors or conflicts with ground truth
-
-Explain your reasoning step-by-step before giving your final judgment."""
+The student answer can have additional information as long as it's accurate."""
 
 RELEVANCE_INSTRUCTIONS = """You are evaluating how well a generated response addresses the user's question.
 
-Evaluation criteria:
-(1) Does the response directly address the question asked?
-(2) Is the response helpful and informative for the user?
-(3) Does the response stay on topic and avoid irrelevant information?
-(4) Is the response complete enough to satisfy the user's information need?
+Does the response directly address the question? Is it helpful and on-topic?
 
-Scoring scale:
-- 5: Perfectly relevant, directly addresses all aspects of the question
-- 4: Highly relevant, addresses most aspects with minor gaps
-- 3: Moderately relevant, addresses some aspects but missing key points
-- 2: Somewhat relevant, tangentially related but doesn't fully address question
-- 1: Not relevant, fails to address the question
+Rate 1-5:
+- 5: Perfectly answers the question
+- 4: Good answer with minor gaps  
+- 3: Partially answers the question
+- 2: Somewhat related but incomplete
+- 1: Does not answer the question
 
-Provide detailed reasoning for your score."""
+Be concise in your explanation."""
 
-GROUNDEDNESS_INSTRUCTIONS = """You are evaluating whether a generated response is grounded in the provided context.
+GROUNDEDNESS_INSTRUCTIONS = """You are checking if a response is supported by the provided context.
 
-Evaluation criteria:
-(1) Are all claims in the response supported by the retrieved context?
-(2) Does the response avoid making statements not found in the context?
-(3) Are there any hallucinations or fabricated information?
-(4) Does the response accurately represent the information from the context?
+Key question: Does the response contain information that is NOT in the context?
 
-Definitions:
-- Grounded: All information in the response can be traced back to the provided context
-- Hallucination: Information that is not present in or contradicts the provided context
+- Grounded (true): All claims in the response can be found in the context
+- Not grounded (false): The response contains claims not supported by the context
 
-Analyze each claim in the response against the context before making your judgment."""
+A response is grounded if it only uses information from the context, even if it doesn't use all the context.
 
-RETRIEVAL_RELEVANCE_INSTRUCTIONS = """You are evaluating how relevant the retrieved documents are for answering the given question.
+Be strict: if ANY claim cannot be verified from the context, mark as not grounded."""
 
-Evaluation criteria:
-(1) Do the retrieved documents contain information that can help answer the question?
-(2) How closely do the documents match the topic and intent of the question?
-(3) Would these documents enable someone to provide a good answer to the question?
-(4) Are the documents focused on the right subject matter?
+RETRIEVAL_RELEVANCE_INSTRUCTIONS = """You are evaluating if the retrieved documents can help answer the question.
 
-Scoring scale:
-- 5: Highly relevant, documents directly address the question topic
-- 4: Very relevant, documents contain useful information for the question
-- 3: Moderately relevant, some useful information but not comprehensive
-- 2: Somewhat relevant, tangentially related but limited usefulness
-- 1: Not relevant, documents don't help answer the question
+Do the documents contain useful information for answering the question?
 
-Consider the quality and relevance of ALL retrieved documents in your evaluation."""
+Rate 1-5:
+- 5: Documents directly address the question topic
+- 4: Documents contain very useful information
+- 3: Documents have some relevant information
+- 2: Documents are somewhat related
+- 1: Documents are not helpful for the question
+
+Consider all retrieved documents together."""
 
 class RAGEvaluator:
     """Comprehensive RAG evaluation system using Ollama"""
     
-    def __init__(self, model_name: str = "llama3", temperature: float = 0):
+    def __init__(self, model_name: str = "llama3.2:3b", temperature: float = 0):
         self.llm = ChatOllama(model=model_name, temperature=temperature)
         logger.info(f"Initialized RAG Evaluator with model: {model_name}")
     
@@ -110,41 +94,101 @@ class RAGEvaluator:
             if start_idx != -1 and end_idx != 0:
                 json_str = response[start_idx:end_idx]
                 data = json.loads(json_str)
-                return schema_class(**data).dict()
+                validated_data = schema_class(**data)
+                return validated_data.dict()
         except Exception as e:
             logger.warning(f"Failed to parse structured output: {e}")
         
         # Fallback: manual parsing
-        return self._manual_parse(response, schema_class)
+        result = self._manual_parse(response, schema_class)
+        
+        # Validate the result using the schema
+        try:
+            validated_result = schema_class(**result)
+            return validated_result.dict()
+        except Exception as e:
+            logger.warning(f"Manual parsing result validation failed: {e}, using result as-is")
+            return result
     
     def _manual_parse(self, response: str, schema_class) -> Dict:
-        """Manual parsing fallback"""
+        """Manual parsing fallback with improved logic"""
         result = {}
-        
-        # Extract explanation
-        if "explanation" in response.lower():
-            explanation_start = response.lower().find("explanation")
-            explanation_part = response[explanation_start:].split('\n')[0]
-            result["explanation"] = explanation_part.split(':', 1)[1].strip() if ':' in explanation_part else response
-        else:
-            result["explanation"] = response
-        
-        # Extract boolean values
         response_lower = response.lower()
-        if "correct" in schema_class.__fields__:
-            result["correct"] = "true" in response_lower and "false" not in response_lower
-        if "relevant" in schema_class.__fields__:
-            result["relevant"] = "true" in response_lower and "false" not in response_lower
-        if "grounded" in schema_class.__fields__:
-            result["grounded"] = "true" in response_lower and "false" not in response_lower
-        if "hallucination" in schema_class.__fields__:
-            result["hallucination"] = "hallucination" in response_lower and "no hallucination" not in response_lower
         
-        # Extract score
+        # Extract explanation - take the full response as explanation
+        result["explanation"] = response.strip()
+        
+        # Improved boolean detection
+        if "correct" in schema_class.__fields__:
+            # Look for explicit true/false or positive/negative indicators
+            if "correct: true" in response_lower or "\"correct\": true" in response_lower:
+                result["correct"] = True
+            elif "correct: false" in response_lower or "\"correct\": false" in response_lower:
+                result["correct"] = False
+            else:
+                # Fallback: look for positive indicators
+                positive_words = ["correct", "accurate", "right", "yes"]
+                negative_words = ["incorrect", "wrong", "false", "no", "inaccurate"]
+                pos_count = sum(1 for word in positive_words if word in response_lower)
+                neg_count = sum(1 for word in negative_words if word in response_lower)
+                result["correct"] = pos_count > neg_count
+        
+        if "relevant" in schema_class.__fields__:
+            if "relevant: true" in response_lower or "\"relevant\": true" in response_lower:
+                result["relevant"] = True
+            elif "relevant: false" in response_lower or "\"relevant\": false" in response_lower:
+                result["relevant"] = False
+            else:
+                # Check for relevance indicators
+                result["relevant"] = "relevant" in response_lower and "not relevant" not in response_lower
+        
+        if "grounded" in schema_class.__fields__:
+            if "grounded: true" in response_lower or "\"grounded\": true" in response_lower:
+                result["grounded"] = True
+            elif "grounded: false" in response_lower or "\"grounded\": false" in response_lower:
+                result["grounded"] = False
+            else:
+                # Look for grounding indicators
+                grounded_indicators = ["grounded", "supported", "backed by context"]
+                ungrounded_indicators = ["not grounded", "unsupported", "hallucination", "fabricated"]
+                
+                grounded_count = sum(1 for indicator in grounded_indicators if indicator in response_lower)
+                ungrounded_count = sum(1 for indicator in ungrounded_indicators if indicator in response_lower)
+                result["grounded"] = grounded_count > ungrounded_count
+        
+        if "hallucination" in schema_class.__fields__:
+            if "hallucination: true" in response_lower or "\"hallucination\": true" in response_lower:
+                result["hallucination"] = True
+            elif "hallucination: false" in response_lower or "\"hallucination\": false" in response_lower:
+                result["hallucination"] = False
+            else:
+                # Hallucination is opposite of grounded
+                hallucination_indicators = ["hallucination", "fabricated", "not supported", "made up"]
+                result["hallucination"] = any(indicator in response_lower for indicator in hallucination_indicators)
+        
+        # Extract score with better regex
         if "score" in schema_class.__fields__:
             import re
-            score_match = re.search(r'score[:\s]*(\d)', response_lower)
-            result["score"] = int(score_match.group(1)) if score_match else 3
+            # Look for score patterns like "score: 3", "score": 3, or just standalone numbers
+            score_patterns = [
+                r'score[:\s]*(\d)',
+                r'"score":\s*(\d)',
+                r'(\d)/5',
+                r'rate[:\s]*(\d)',
+                r'rating[:\s]*(\d)'
+            ]
+            
+            for pattern in score_patterns:
+                score_match = re.search(pattern, response_lower)
+                if score_match:
+                    score = int(score_match.group(1))
+                    if 1 <= score <= 5:
+                        result["score"] = score
+                        break
+            
+            # Default score if none found
+            if "score" not in result:
+                result["score"] = 3
         
         return result
     
@@ -157,11 +201,11 @@ QUESTION: {question}
 GROUND TRUTH ANSWER: {ground_truth}
 STUDENT ANSWER: {student_answer}
 
-Provide your evaluation in this JSON format:
-{{
-    "explanation": "Your detailed reasoning here",
-    "correct": true/false
-}}
+Is the student answer factually correct compared to the ground truth?
+
+Format your response as:
+Correct: [true/false]
+Explanation: [Your reasoning]
 """
         
         try:
@@ -179,20 +223,28 @@ Provide your evaluation in this JSON format:
 {RELEVANCE_INSTRUCTIONS}
 
 QUESTION: {question}
+
 ANSWER: {answer}
 
-Provide your evaluation in this JSON format:
-{{
-    "explanation": "Your detailed reasoning here",
-    "relevant": true/false,
-    "score": 1-5
-}}
+Rate the relevance (1-5) and explain why.
+
+Format your response as:
+Score: [1-5]
+Relevant: [true/false]
+Explanation: [Your reasoning]
 """
         
         try:
             response = self.llm.invoke(prompt)
             result = self._parse_structured_output(response.content, RelevanceGrade)
-            logger.info(f"Relevance evaluation completed: {result['score']}/5")
+            
+            # Ensure consistency between score and relevant boolean
+            if result["score"] >= 3:
+                result["relevant"] = True
+            else:
+                result["relevant"] = False
+                
+            logger.info(f"Relevance evaluation completed: {result['score']}/5, relevant={result['relevant']}")
             return result
         except Exception as e:
             logger.error(f"Error in relevance evaluation: {e}")
@@ -205,22 +257,29 @@ Provide your evaluation in this JSON format:
         prompt = f"""
 {GROUNDEDNESS_INSTRUCTIONS}
 
-RETRIEVED CONTEXT:
+CONTEXT:
 {context_text}
 
 GENERATED ANSWER: {answer}
 
-Provide your evaluation in this JSON format:
-{{
-    "explanation": "Your detailed reasoning here",
-    "grounded": true/false,
-    "hallucination": true/false
-}}
+Check each claim in the answer against the context. Is the answer grounded?
+
+Format your response as:
+Grounded: [true/false]
+Hallucination: [true/false]
+Explanation: [Your reasoning]
 """
         
         try:
             response = self.llm.invoke(prompt)
             result = self._parse_structured_output(response.content, GroundednessGrade)
+            
+            # Ensure logical consistency: if grounded is true, hallucination should be false
+            if result["grounded"]:
+                result["hallucination"] = False
+            elif not result["grounded"]:
+                result["hallucination"] = True
+                
             logger.info(f"Groundedness evaluation completed: grounded={result['grounded']}, hallucination={result['hallucination']}")
             return result
         except Exception as e:
@@ -239,18 +298,25 @@ QUESTION: {question}
 RETRIEVED DOCUMENTS:
 {docs_text}
 
-Provide your evaluation in this JSON format:
-{{
-    "explanation": "Your detailed reasoning here",
-    "relevant": true/false,
-    "score": 1-5
-}}
+Rate how well these documents can help answer the question.
+
+Format your response as:
+Score: [1-5]
+Relevant: [true/false]
+Explanation: [Your reasoning]
 """
         
         try:
             response = self.llm.invoke(prompt)
             result = self._parse_structured_output(response.content, RetrievalRelevanceGrade)
-            logger.info(f"Retrieval relevance evaluation completed: {result['score']}/5")
+            
+            # Ensure consistency between score and relevant boolean
+            if result["score"] >= 3:
+                result["relevant"] = True
+            else:
+                result["relevant"] = False
+                
+            logger.info(f"Retrieval relevance evaluation completed: {result['score']}/5, relevant={result['relevant']}")
             return result
         except Exception as e:
             logger.error(f"Error in retrieval relevance evaluation: {e}")
@@ -270,23 +336,115 @@ Provide your evaluation in this JSON format:
         if ground_truth:
             results["correctness"] = self.evaluate_correctness(question, answer, ground_truth)
         
-        # Calculate overall score
+        # Calculate overall score with better weighting
         scores = []
-        if ground_truth and "correctness" in results:
-            scores.append(5 if results["correctness"]["correct"] else 1)
-        scores.append(results["relevance"]["score"])
-        scores.append(5 if results["groundedness"]["grounded"] else 1)
-        scores.append(results["retrieval_relevance"]["score"])
+        weights = []
         
-        results["overall_score"] = sum(scores) / len(scores)
+        # Relevance score (high weight - most important)
+        scores.append(results["relevance"]["score"])
+        weights.append(0.4)
+        
+        # Groundedness score (high weight - very important for RAG)
+        groundedness_score = 5 if results["groundedness"]["grounded"] else 1
+        scores.append(groundedness_score)
+        weights.append(0.4)
+        
+        # Retrieval relevance score (medium weight)
+        scores.append(results["retrieval_relevance"]["score"])
+        weights.append(0.2)
+        
+        # Correctness score (high weight if available)
+        if ground_truth and "correctness" in results:
+            correctness_score = 5 if results["correctness"]["correct"] else 1
+            scores.append(correctness_score)
+            weights.append(0.3)
+            # Adjust other weights to accommodate correctness
+            weights[0] = 0.3  # relevance
+            weights[1] = 0.3  # groundedness  
+            weights[2] = 0.1  # retrieval relevance
+        
+        # Calculate weighted average
+        total_weight = sum(weights)
+        weighted_scores = [score * weight for score, weight in zip(scores, weights)]
+        results["overall_score"] = sum(weighted_scores) / total_weight
+        
         results["summary"] = {
             "total_evaluations": len(scores),
             "has_ground_truth": ground_truth is not None,
-            "overall_score": results["overall_score"]
+            "overall_score": results["overall_score"],
+            "component_scores": {
+                "relevance": results["relevance"]["score"],
+                "groundedness": groundedness_score,
+                "retrieval_relevance": results["retrieval_relevance"]["score"]
+            }
         }
+        
+        if ground_truth and "correctness" in results:
+            results["summary"]["component_scores"]["correctness"] = correctness_score
         
         logger.info(f"Complete RAG evaluation finished. Overall score: {results['overall_score']:.2f}/5")
         return results
+
+    def debug_evaluation(self, question: str, answer: str, context: List[str], 
+                        ground_truth: Optional[str] = None) -> Dict:
+        """
+        Debug version of evaluation that shows the raw LLM responses
+        to help understand evaluation issues
+        """
+        debug_results = {
+            "question": question,
+            "answer": answer,
+            "context_summary": f"{len(context)} documents retrieved",
+            "raw_responses": {}
+        }
+        
+        # Test relevance with raw response
+        relevance_prompt = f"""
+{RELEVANCE_INSTRUCTIONS}
+
+QUESTION: {question}
+
+ANSWER: {answer}
+
+Rate the relevance (1-5) and explain why.
+
+Format your response as:
+Score: [1-5]
+Relevant: [true/false]
+Explanation: [Your reasoning]
+"""
+        try:
+            relevance_response = self.llm.invoke(relevance_prompt)
+            debug_results["raw_responses"]["relevance"] = relevance_response.content
+            debug_results["relevance_parsed"] = self._parse_structured_output(relevance_response.content, RelevanceGrade)
+        except Exception as e:
+            debug_results["raw_responses"]["relevance"] = f"Error: {e}"
+        
+        # Test groundedness with raw response
+        context_text = "\n\n".join([f"Document {i+1}: {doc}" for i, doc in enumerate(context)])
+        groundedness_prompt = f"""
+{GROUNDEDNESS_INSTRUCTIONS}
+
+CONTEXT:
+{context_text}
+
+GENERATED ANSWER: {answer}
+
+Check each claim in the answer against the context. Is the answer grounded?
+
+Format your response as:
+Grounded: [true/false]
+Hallucination: [true/false]
+Explanation: [Your reasoning]
+"""
+        try:
+            groundedness_response = self.llm.invoke(groundedness_prompt)
+            debug_results["raw_responses"]["groundedness"] = groundedness_response.content
+            debug_results["groundedness_parsed"] = self._parse_structured_output(groundedness_response.content, GroundednessGrade)
+        except Exception as e:
+            debug_results["raw_responses"]["groundedness"] = f"Error: {e}"
+        
+        return debug_results
 
 # Example usage and testing
 def test_evaluator():
